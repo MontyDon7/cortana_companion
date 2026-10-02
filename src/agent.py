@@ -18,6 +18,7 @@ from mem0 import AsyncMemoryClient
 from livekit.agents import ChatContext, AgentConfigUpdate
 import json
 from tools import stt, assign_name_2_speaker_ids
+from delegate import delegate_workflow
 from livekit.plugins import hedra
 from PIL import Image
 
@@ -37,9 +38,10 @@ class Assistant(Agent):
                             If you recognize any speakers by their speaker ID that has a proper name assigned to it greet them by saying:
                             "Hello {name}, nice to see you again!" or a variation of this greeting.
                             If their is a user is identified with a speaker ID like "S1" or "S2" and they don't have a proper name assigned to them, ask them for their name and then assign it to their speaker ID using the assign_name_2_speaker_ids tool.
+                            For multi-step tasks the user wants done for them, call delegate_workflow, then tell them you'll report back.
                             """,
             chat_ctx=chat_context,
-            tools=[assign_name_2_speaker_ids],
+            tools=[assign_name_2_speaker_ids, delegate_workflow],
         )
 
     # To add tools, use the @function_tool decorator.
