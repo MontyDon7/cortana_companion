@@ -15,6 +15,7 @@ version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "ddgs" },
+    { name = "httpx" },
     { name = "langchain-community" },
     { name = "livekit-agents", extra = ["hedra", "images", "silero", "speechmatics", "turn-detector"] },
     { name = "livekit-plugins-noise-cancellation" },
@@ -32,6 +33,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "ddgs", specifier = ">=9.13.0" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "langchain-community", specifier = ">=0.4.1" },
     { name = "livekit-agents", extras = ["hedra", "images", "silero", "speechmatics", "turn-detector"], specifier = "~=1.4" },
     { name = "livekit-plugins-noise-cancellation", specifier = "~=0.2" },
