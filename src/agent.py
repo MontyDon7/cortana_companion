@@ -1,28 +1,30 @@
+import json
 import logging
+from pathlib import Path
 
 from dotenv import load_dotenv
 from livekit import rtc
 from livekit.agents import (
     Agent,
+    AgentConfigUpdate,
     AgentServer,
     AgentSession,
+    ChatContext,
     JobContext,
     JobProcess,
     cli,
     inference,
-    room_io
+    room_io,
 )
-from livekit.plugins import noise_cancellation, silero
+from livekit.plugins import hedra, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from mem0 import AsyncMemoryClient
-from livekit.agents import ChatContext, AgentConfigUpdate
-import json
-from tools import stt, assign_name_2_speaker_ids
-from livekit.plugins import hedra
 from PIL import Image
 
-# Create a PIL Image object
-avatar_image = Image.open("src/portrait_images/cortana_portrait_smirky.png")
+from delegate import delegate_workflow
+from tools import assign_name_2_speaker_ids, get_stt
+
+AVATAR_IMAGE_PATH = Path("src/portrait_images/cortana_portrait_smirky.png")
 
 
 logger = logging.getLogger("agent")
@@ -33,13 +35,14 @@ load_dotenv(".env.local")
 class Assistant(Agent):
     def __init__(self, chat_context: ChatContext) -> None:
         super().__init__(
-            instructions="""You are Cortana, a helpful AI assistant. Respond to the user like a friend. 
+            instructions="""You are Cortana, a helpful AI assistant. Respond to the user like a friend.
                             If you recognize any speakers by their speaker ID that has a proper name assigned to it greet them by saying:
                             "Hello {name}, nice to see you again!" or a variation of this greeting.
                             If their is a user is identified with a speaker ID like "S1" or "S2" and they don't have a proper name assigned to them, ask them for their name and then assign it to their speaker ID using the assign_name_2_speaker_ids tool.
+                            For multi-step tasks the user wants done for them, call delegate_workflow, then tell them you'll report back.
                             """,
             chat_ctx=chat_context,
-            tools=[assign_name_2_speaker_ids],
+            tools=[assign_name_2_speaker_ids, delegate_workflow],
         )
 
     # To add tools, use the @function_tool decorator.
@@ -75,35 +78,39 @@ async def my_agent(ctx: JobContext):
     # Logging setup
     # Add any other context you want in all log entries here
 
-    #Add your name here
-    user_name = 'unknown'
+    # Add your name here
+    user_name = "unknown"
 
-    async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
+    async def shutdown_hook(
+        chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str
+    ):
         logging.info("Shutting down, saving chat context to memory...")
 
-        messages_formatted = [
-        ]
+        messages_formatted = []
 
         logging.info(f"Chat context messages: {chat_ctx.items}")
 
         for item in chat_ctx.items:
             if isinstance(item, AgentConfigUpdate):
                 continue
-            content_str = ''.join(item.content) if isinstance(item.content, list) else str(item.content)
+            content_str = (
+                "".join(item.content)
+                if isinstance(item.content, list)
+                else str(item.content)
+            )
 
             if memory_str and memory_str in content_str:
                 continue
 
-            if item.role in ['user', 'assistant']:
-                messages_formatted.append({
-                    "role": item.role,
-                    "content": content_str.strip()
-                })
+            if item.role in ["user", "assistant"]:
+                messages_formatted.append(
+                    {"role": item.role, "content": content_str.strip()}
+                )
 
         logging.info(f"Formatted messages to add to memory: {messages_formatted}")
         await mem0.add(messages_formatted, user_id=user_name)
         logging.info("Chat context saved to memory.")
-    
+
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
@@ -112,7 +119,7 @@ async def my_agent(ctx: JobContext):
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
         # See all available models at https://docs.livekit.io/agents/models/stt/
-        stt=stt,
+        stt=get_stt(),
         # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
         # See all available models at https://docs.livekit.io/agents/models/llm/
         llm=inference.LLM(model="openai/gpt-4.1-mini"),
@@ -132,27 +139,21 @@ async def my_agent(ctx: JobContext):
 
     mem0 = AsyncMemoryClient()
 
-    results = await mem0.get_all(
-        filters={
-            "user_id": user_name
-        })
-    
-    initial_ctx = ChatContext() 
-    memory_str = ''
+    results = await mem0.get_all(filters={"user_id": user_name})
+
+    initial_ctx = ChatContext()
+    memory_str = ""
     logging.info(f"Memories: {results}")
-    if results and results.get('results'):
+    if results and results.get("results"):
         memories = [
-            {
-                "memory": result["memory"],
-                "updated_at": result["updated_at"]
-            }
-            for result in results['results']
+            {"memory": result["memory"], "updated_at": result["updated_at"]}
+            for result in results["results"]
         ]
         memory_str = json.dumps(memories)
         logging.info(f"Memories: {memory_str}")
         initial_ctx.add_message(
             role="assistant",
-            content=f"The user's name is {user_name}, and this is relvant context about him: {memory_str}."
+            content=f"The user's name is {user_name}, and this is relvant context about him: {memory_str}.",
         )
 
     # To use a realtime model instead of a voice pipeline, use the following session setup instead.
@@ -189,13 +190,16 @@ async def my_agent(ctx: JobContext):
         ),
     )
 
-    # Pass the custom image to the avatar session
-    avatar = hedra.AvatarSession(
-        avatar_image=avatar_image,
-    )
+    # Pass the custom image to the avatar session (skipped if the image is absent)
+    if AVATAR_IMAGE_PATH.exists():
+        avatar = hedra.AvatarSession(avatar_image=Image.open(AVATAR_IMAGE_PATH))
 
-    # Start the avatar and wait for it to join
-    await avatar.start(session, room=ctx.room)
+        # Start the avatar and wait for it to join
+        await avatar.start(session, room=ctx.room)
+    else:
+        logger.warning(
+            "Avatar image %s not found; running without avatar", AVATAR_IMAGE_PATH
+        )
 
     await session.generate_reply(
         instructions="""Greet the user by saying: 'Hi my name is Cortana, how can I help you today?'
@@ -205,9 +209,10 @@ async def my_agent(ctx: JobContext):
 
     # Join the room and connect to the user
     await ctx.connect()
-    ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
+    ctx.add_shutdown_callback(
+        lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str)
+    )
 
 
 if __name__ == "__main__":
     cli.run_app(server)
-
